@@ -1,0 +1,8 @@
+[package]
+name = "jump-app"
+version = "0.0.1"
+authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>"]
+
+[dependencies]
+clap = "2.31"
+duct = "0.10"

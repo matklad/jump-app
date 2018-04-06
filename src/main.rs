@@ -1,13 +1,30 @@
 extern crate clap;
 #[macro_use]
 extern crate duct;
+#[macro_use]
+extern crate failure;
+
+type Result<T> = ::std::result::Result<T, failure::Error>;
 
 fn main() {
-    let matches = cli().get_matches();
-    let window_name = matches.value_of("name").unwrap().to_lowercase();
-    let mut prog = matches.values_of("prog").unwrap();
+    let code = {
+        let matches = cli().get_matches();
+        let window_name = matches.value_of("name").unwrap();
+        let mut prog = matches.values_of("prog").unwrap();
+        match jump_app(window_name, prog) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("{}", e);
+                101
+            }
+        }
+    };
+    ::std::process::exit(code);
+}
 
-    let ws = list_windows();
+fn jump_app(window_name: &str, mut prog: clap::Values) -> Result<()> {
+    let window_name = window_name.to_lowercase();
+    let ws = list_windows()?;
     let matching = ws.into_iter()
         .find(|w| w.matches(&window_name));
     match matching {
@@ -16,22 +33,23 @@ fn main() {
             let handle = duct::cmd(executable, prog)
                 .stderr_null()
                 .stdout_null()
-                .start()
-                .unwrap();
+                .start()?;
             drop(handle);
         }
-        Some(ref w) => raise_or_hide(w)
-    }
+        Some(ref w) => raise_or_hide(w)?
+    };
+    Ok(())
 }
 
-fn raise_or_hide(w: &Window) {
-    let focused = focused_window();
+fn raise_or_hide(w: &Window) -> Result<()> {
+    let focused = focused_window()?;
     let cmd = if focused == w.id {
         cmd!("xdotool", "getactivewindow", "windowminimize")
     } else {
         cmd!("wmctrl", "-i", "-a", format!("0x{:x}", w.id))
     };
-    let out = cmd.run().unwrap();
+    cmd.run()?;
+    Ok(())
 }
 
 
@@ -47,33 +65,36 @@ impl Window {
     }
 }
 
-fn list_windows() -> Vec<Window> {
-    let windows = cmd!("wmctrl", "-lx").read().unwrap();
+fn list_windows() -> Result<Vec<Window>> {
+    let windows = cmd!("wmctrl", "-lx").read()?;
     windows.lines()
         .filter(|win| win.split_whitespace().nth(1) == Some("0"))
         .map(|win| {
-            let id = win.split_whitespace().next().unwrap().to_string();
-            let id = parse_window_id(&id);
-            let name = win.split_whitespace().nth(2).unwrap().to_string();
-            Window { id, name }
+            let id = win.split_whitespace().next()
+                .ok_or(format_err!("unable to parse {:?}", win))?
+                .to_string();
+            let id = parse_window_id(&id)?;
+            let name = win.split_whitespace().nth(2)
+                .ok_or(format_err!("unable to parse {:?}", win))?
+                .to_string();
+            Ok(Window { id, name })
         })
         .collect()
 }
 
-fn focused_window() -> u64 {
+fn focused_window() -> Result<u64> {
     let id = cmd!("xprop", "-root", "_NET_ACTIVE_WINDOW")
-        .read()
-        .unwrap()
+        .read()?
         .split_whitespace()
         .last()
-        .unwrap()
+        .ok_or(format_err!("Unable to get focused window"))?
         .to_string();
     parse_window_id(&id)
 }
 
-fn parse_window_id(id: &str) -> u64 {
-    u64::from_str_radix(&id[2..], 16)
-        .unwrap()
+fn parse_window_id(id: &str) -> Result<u64> {
+    let id = u64::from_str_radix(&id[2..], 16)?;
+    Ok(id)
 }
 
 

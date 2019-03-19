@@ -1,10 +1,4 @@
-extern crate clap;
-#[macro_use]
-extern crate duct;
-#[macro_use]
-extern crate failure;
-
-type Result<T> = ::std::result::Result<T, failure::Error>;
+type Result<T> = std::result::Result<T, failure::Error>;
 
 fn main() {
     let code = {
@@ -25,10 +19,12 @@ fn main() {
 fn jump_app(window_name: &str, mut prog: clap::Values) -> Result<()> {
     let window_name = window_name.to_lowercase();
     let ws = list_windows()?;
-    let matching = ws.into_iter()
-        .find(|w| w.matches(&window_name));
-    match matching {
-        None => {
+    let matching = ws
+        .into_iter()
+        .filter(|w| w.matches(&window_name))
+        .collect::<Vec<_>>();
+    match matching.len() {
+        0 => {
             let executable = prog.next().unwrap();
             let handle = duct::cmd(executable, prog)
                 .stderr_null()
@@ -36,7 +32,8 @@ fn jump_app(window_name: &str, mut prog: clap::Values) -> Result<()> {
                 .start()?;
             drop(handle);
         }
-        Some(ref w) => raise_or_hide(w)?
+        1 => raise_or_hide(matching.first().unwrap())?,
+        _ => cycle(&matching)?,
     };
     Ok(())
 }
@@ -44,14 +41,23 @@ fn jump_app(window_name: &str, mut prog: clap::Values) -> Result<()> {
 fn raise_or_hide(w: &Window) -> Result<()> {
     let focused = focused_window()?;
     let cmd = if focused == w.id {
-        cmd!("xdotool", "getactivewindow", "windowminimize")
+        duct::cmd!("xdotool", "getactivewindow", "windowminimize")
     } else {
-        cmd!("wmctrl", "-i", "-a", format!("0x{:x}", w.id))
+        duct::cmd!("wmctrl", "-i", "-a", format!("0x{:x}", w.id))
     };
     cmd.run()?;
     Ok(())
 }
 
+fn cycle(ws: &[Window]) -> Result<()> {
+    assert!(ws.len() > 0);
+    let focused = focused_window()?;
+    let pos = ws.iter().position(|w| w.id == focused).unwrap_or(ws.len());
+    let pos = (pos + 1) % ws.len();
+    let id = ws[pos].id;
+    duct::cmd!("wmctrl", "-i", "-a", format!("0x{:x}", id)).run()?;
+    Ok(())
+}
 
 #[derive(Debug)]
 struct Window {
@@ -66,16 +72,21 @@ impl Window {
 }
 
 fn list_windows() -> Result<Vec<Window>> {
-    let windows = cmd!("wmctrl", "-lx").read()?;
-    windows.lines()
+    let windows = duct::cmd!("wmctrl", "-lx").read()?;
+    windows
+        .lines()
         .filter(|win| win.split_whitespace().nth(1) == Some("0"))
         .map(|win| {
-            let id = win.split_whitespace().next()
-                .ok_or(format_err!("unable to parse {:?}", win))?
+            let id = win
+                .split_whitespace()
+                .next()
+                .ok_or(failure::format_err!("unable to parse {:?}", win))?
                 .to_string();
             let id = parse_window_id(&id)?;
-            let name = win.split_whitespace().nth(2)
-                .ok_or(format_err!("unable to parse {:?}", win))?
+            let name = win
+                .split_whitespace()
+                .nth(2)
+                .ok_or(failure::format_err!("unable to parse {:?}", win))?
                 .to_string();
             Ok(Window { id, name })
         })
@@ -83,11 +94,11 @@ fn list_windows() -> Result<Vec<Window>> {
 }
 
 fn focused_window() -> Result<u64> {
-    let id = cmd!("xprop", "-root", "_NET_ACTIVE_WINDOW")
+    let id = duct::cmd!("xprop", "-root", "_NET_ACTIVE_WINDOW")
         .read()?
         .split_whitespace()
         .last()
-        .ok_or(format_err!("Unable to get focused window"))?
+        .ok_or(failure::format_err!("Unable to get focused window"))?
         .to_string();
     parse_window_id(&id)
 }
@@ -97,16 +108,8 @@ fn parse_window_id(id: &str) -> Result<u64> {
     Ok(id)
 }
 
-
 fn cli() -> clap::App<'static, 'static> {
     clap::App::new("jump-app")
-        .arg(
-            clap::Arg::with_name("name")
-                .required(true)
-        )
-        .arg(
-            clap::Arg::with_name("prog")
-                .last(true)
-                .multiple(true)
-        )
+        .arg(clap::Arg::with_name("name").required(true))
+        .arg(clap::Arg::with_name("prog").last(true).multiple(true))
 }
